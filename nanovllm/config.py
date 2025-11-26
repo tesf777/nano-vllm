@@ -2,7 +2,11 @@ import os
 from dataclasses import dataclass
 from transformers import AutoConfig
 
-
+'''
+这里的装饰器写法是简化了繁琐的变量赋值，
+并且自动生成魔术方法：__repr__变量打印，__eq__比较重载
+__post_init__是钩子函数，在init后进行，通常用于加载后验证
+'''
 @dataclass
 class Config:
     model: str
