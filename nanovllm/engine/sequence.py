@@ -57,7 +57,7 @@ class Sequence:
         self.num_prompt_tokens = len(token_ids)
         # 已缓存到 GPU 的 token 数（用于增量更新）
         self.num_cached_tokens = 0
-        # 指向物理 KV Cache 块的索引列表（如 [3, 7, 12]）
+        # 指向物理 KV Cache 块(Blockid)的索引列表（如 [3, 7, 12]）
         self.block_table = []
         # 将采样策略“扁平化”到序列对象中，避免每次生成时传递 SamplingParams
         self.temperature = sampling_params.temperature

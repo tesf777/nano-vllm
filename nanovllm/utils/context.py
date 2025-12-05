@@ -4,6 +4,16 @@ import torch
 
 @dataclass
 class Context:
+    '''
+    管理推理过程中的上下文状态（Context）
+    isprefill: 标志位代表是否处于逐token生成阶段，在用户第一次输入prompt时才进行prefill;
+    cumulative sequence lengths:用于在FlashAttention中处理packed sequences;
+    max_seqlens: 当前 batch 中 query 和 key 的 最大序列长度;
+    mapping: PagedAttention 中，KV cache 被分页存储（类似虚拟内存）,
+    slot_mapping[i] 告诉第 i 个 token 的 KV 应该写入/读取哪个物理页的哪个槽位（slot）;
+    context_lens: len([prompt + generated])
+    block_tables: block_tables[0] = [10, 25, 7] 表示序列 0 的 KV cache 分布在物理页 10、25、7 上
+    '''
     is_prefill: bool = False
     cu_seqlens_q: torch.Tensor | None = None
     cu_seqlens_k: torch.Tensor | None = None
@@ -13,6 +23,8 @@ class Context:
     context_lens: torch.Tensor | None = None
     block_tables: torch.Tensor | None = None
 
+# _CONTEXT实例是全局变量，用于在前向传播的时候传递batch相关的信息
+# 防止变量层层传递带来的开销。
 _CONTEXT = Context()
 
 def get_context():

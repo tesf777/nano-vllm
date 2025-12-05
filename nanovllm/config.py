@@ -29,9 +29,9 @@ class Config:
     hf_config: AutoConfig | None = None
     # -1表示未设置，后续可能从 tokenizer 自动获取
     eos: int = -1
-    # 将 KV Cache 分成固定大小的 block
+    # 将 KV Cache 分成固定大小的 1 block = 256 tokens
     kvcache_block_size: int = 256
-    # -1表示自动计算块数目，通常根据之前的利用率，去除权重等其他占用，最后留给kvcache
+    # -1表示自动计算block块数目，通常根据之前的利用率，去除权重等其他占用，最后留给kvcache
     num_kvcache_blocks: int = -1
 
     def __post_init__(self):
