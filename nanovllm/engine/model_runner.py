@@ -13,8 +13,22 @@ from nanovllm.utils.loader import load_model
 
 
 class ModelRunner:
+    '''
 
+    [tp相关]：\n
+    world_size: tp并行数量;\n
+    rank: GPU: [0,world_size-1]
+    event: 多进程同步事件，在rank0写入共享内存后触发其他rank执行;\n
+    graph: cuda图优化，提前融合算子;\n
+    shm: sharedMemory world_size >1 时启用;\n
+    '''
     def __init__(self, config: Config, rank: int, event: Event | list[Event]):
+        '''
+        分布式环境NCCL + TCP 初始化;
+        预热模型并根据空间分配总的KVCache;
+        若使用CudaGraph，则捕获capture_cudagraph;
+        多卡，则rank0启用共享内存，其他rank进入loop()等待指令；
+        '''
         self.config = config
         hf_config = config.hf_config
         self.block_size = config.kvcache_block_size
@@ -48,6 +62,12 @@ class ModelRunner:
                 self.loop()
 
     def exit(self):
+        '''
+        清理共享内存;
+        销毁CudaGraph;
+        同步GPU，并关闭分布式组;
+        主从IPC架构，rank0调度，其他负责执行;
+        '''
         if self.world_size > 1:
             self.shm.close()
             dist.barrier()
@@ -59,6 +79,11 @@ class ModelRunner:
         dist.destroy_process_group()
 
     def loop(self):
+        '''
+        无限循环等待主进程（rank=0）通过共享内存发送指令;
+        调用 read_shm() 获取 (method_name, args)
+        执行 self.call(method_name, *args)
+        '''
         while True:
             method_name, args = self.read_shm()
             self.call(method_name, *args)
@@ -66,6 +91,9 @@ class ModelRunner:
                 break
 
     def read_shm(self):
+        '''
+        read_shm 由 worker 调用，阻塞等待 event.set()
+        '''
         assert self.world_size > 1 and self.rank > 0
         self.event.wait()
         n = int.from_bytes(self.shm.buf[0:4], "little")
@@ -74,6 +102,10 @@ class ModelRunner:
         return method_name, args
 
     def write_shm(self, method_name, *args):
+        '''
+        数据格式：[4字节长度][pickle序列化数据];
+        write_shm 由 rank=0 调用，广播指令到所有 worker;
+        '''
         assert self.world_size > 1 and self.rank == 0
         data = pickle.dumps([method_name, *args])
         n = len(data)
@@ -83,12 +115,23 @@ class ModelRunner:
             event.set()
 
     def call(self, method_name, *args):
+        '''
+        如果是 rank=0，先 write_shm 广播指令;
+        然后本地执行 getattr(self, method_name)(*args);
+        使用例子：runner.call("run", seqs, True);
+        相当于一个方法注册后集中调用的接口函数;
+        '''
         if self.world_size > 1 and self.rank == 0:
             self.write_shm(method_name, *args)
         method = getattr(self, method_name, None)
         return method(*args)
 
     def warmup_model(self):
+        '''
+        构造最大可能的 batch（num_seqs = max_num_batched_tokens // max_model_len）
+        用全零 token 序列预热模型前向
+        触发 CUDA 内存分配，避免推理时 OOM
+        '''
         torch.cuda.empty_cache()
         torch.cuda.reset_peak_memory_stats()
         max_num_batched_tokens, max_model_len = self.config.max_num_batched_tokens, self.config.max_model_len
@@ -98,6 +141,10 @@ class ModelRunner:
         torch.cuda.empty_cache()
 
     def allocate_kv_cache(self):
+        '''
+        预分配一个大 tensor kv_cache，后续各层直接 slice 使用;
+        计算每 block 占用字节数（考虑 head_dim、层数、TP 切分等）;
+        '''
         config = self.config
         hf_config = config.hf_config
         free, total = torch.cuda.mem_get_info()
@@ -118,12 +165,27 @@ class ModelRunner:
                 layer_id += 1
 
     def prepare_block_tables(self, seqs: list[Sequence]):
+        '''
+        准备页表[424,352,24,123...]，每个元素都是Block_id;\n
+        一批 Sequence 对象各自的 逻辑 block 表（block_table） 
+        转换为一个 统一的、GPU 可用的、固定形状的张量（tensor），
+        供 attention kernel 在计算时快速查找每个 token 所对应的 KV Cache 物理位置;
+        '''
         max_len = max(len(seq.block_table) for seq in seqs)
         block_tables = [seq.block_table + [-1] * (max_len - len(seq.block_table)) for seq in seqs]
         block_tables = torch.tensor(block_tables, dtype=torch.int32, pin_memory=True).cuda(non_blocking=True)
         return block_tables
 
     def prepare_prefill(self, seqs: list[Sequence]):
+        '''
+        处理多个序列的 未缓存部分（seq[seq.num_cached_tokens:]）
+        构建：
+        - input_ids, positions
+        - cu_seqlens_q/k（用于 FlashAttention 的变长序列）
+        - slot_mapping：token 到 KV Cache 物理位置的映射
+        - block_tables：每个序列的 block ID 列表（用于 prefix caching）
+        - 调用 set_context(True, ...) 设置全局上下文（供 attention kernel 使用）
+        '''
         input_ids = []
         positions = []
         cu_seqlens_q = [0]

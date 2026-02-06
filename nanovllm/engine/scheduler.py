@@ -6,7 +6,13 @@ from nanovllm.engine.block_manager import BlockManager
 
 
 class Scheduler:
-
+    '''
+    max_num_seqs:单batch最大序列数
+    max_num_batched_tokens:单batch最大token总数
+    block_manager:管理kv缓存块的页表数和每页包含的Block数
+    waiting：等待的序列
+    running:已完成prefill，正在decoding的序列
+    '''
     def __init__(self, config: Config):
         self.max_num_seqs = config.max_num_seqs
         self.max_num_batched_tokens = config.max_num_batched_tokens
@@ -22,6 +28,10 @@ class Scheduler:
         self.waiting.append(seq)
 
     def schedule(self) -> tuple[list[Sequence], bool]:
+        '''
+        prefill,decode分离的调度实现
+        
+        '''
         # prefill
         scheduled_seqs = []
         num_seqs = 0
