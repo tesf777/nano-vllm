@@ -10,7 +10,9 @@ def divide(numerator, denominator):
 
 
 class LinearBase(nn.Module):
-
+    '''
+    线性层基类，其他线性层需要继承这个基类
+    '''
     def __init__(
         self,
         input_size: int,
@@ -35,7 +37,9 @@ class LinearBase(nn.Module):
 
 
 class ReplicatedLinear(LinearBase):
-
+    '''
+    无并行的简单线性层计算。
+    '''
     def __init__(
         self,
         input_size: int,
@@ -52,7 +56,10 @@ class ReplicatedLinear(LinearBase):
 
 
 class ColumnParallelLinear(LinearBase):
-
+    '''
+    列并行，实际上是对W权重横着切，最终输出y按照outputdim拼接即可。
+    适用于：Q/K/V, gate/up proj
+    '''
     def __init__(
         self,
         input_size: int,
@@ -74,7 +81,10 @@ class ColumnParallelLinear(LinearBase):
 
 
 class MergedColumnParallelLinear(ColumnParallelLinear):
-
+    '''
+    合成列并行
+    根据loaded_shard_id决定写入哪个区域
+    '''
     def __init__(
         self,
         input_size: int,
@@ -94,7 +104,12 @@ class MergedColumnParallelLinear(ColumnParallelLinear):
 
 
 class QKVParallelLinear(ColumnParallelLinear):
-
+    '''
+    专为Attention特化的列并行
+    构造一个大权重：[Q; K; V]
+    形状为 (num_heads + 2*num_kv_heads) * head_size * hidden_size
+    在加载权重时，根据 loaded_shard_id（"q"/"k"/"v"）决定写入哪个子区域。
+    '''
     def __init__(
         self,
         hidden_size: int,
@@ -129,7 +144,10 @@ class QKVParallelLinear(ColumnParallelLinear):
 
 
 class RowParallelLinear(LinearBase):
-
+    '''
+    行并行，把权重矩阵W竖着切，最后要进行一次reduction处理(也就是加和)
+    适用于：o_proj, down_proj 这些列并行之后的操作
+    '''
     def __init__(
         self,
         input_size: int,
@@ -140,9 +158,13 @@ class RowParallelLinear(LinearBase):
         super().__init__(divide(input_size, tp_size), output_size, bias, 1)
 
     def weight_loader(self, param: nn.Parameter, loaded_weight: torch.Tensor):
+        '''
+        从完整的权重 loaded_weight（形状为 [output_size, input_size]）中，提取当前 GPU 对应的那一竖条（shard），并加载到本地参数 param 中
+        '''
         param_data = param.data
         shard_size = param_data.size(self.tp_dim)
         start_idx = self.tp_rank * shard_size
+        # narrow 是高效操作，返回原张量的一个子区域视图，内存连续且无拷贝
         loaded_weight = loaded_weight.narrow(self.tp_dim, start_idx, shard_size)
         param_data.copy_(loaded_weight)
 

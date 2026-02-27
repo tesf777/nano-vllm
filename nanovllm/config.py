@@ -24,10 +24,10 @@ class Config:
     tensor_parallel_size: int = 1
     # cuda graph:一个优化方法。预先启动算子，并融合部分来减少kernel launch的时间 false为使用cuda graph
     # true可以更利于debug
-    enforce_eager: bool = False
+    enforce_eager: bool = True
     # 使用加载的 Hugging Face 模型配置对象
     hf_config: AutoConfig | None = None
-    # -1表示未设置，后续可能从 tokenizer 自动获取
+    # 占位符，-1表示未设置，后续可能从 tokenizer 自动获取
     eos: int = -1
     # 将 KV Cache 分成固定大小的 1 block = 256 tokens
     kvcache_block_size: int = 256
@@ -39,6 +39,7 @@ class Config:
         assert self.kvcache_block_size % 256 == 0
         assert 1 <= self.tensor_parallel_size <= 8
         self.hf_config = AutoConfig.from_pretrained(self.model)
+        # 最大模型上下文长度取决于hf模型参数与自己设定的
         self.max_model_len = min(self.max_model_len, self.hf_config.max_position_embeddings)
         assert self.max_num_batched_tokens >= self.max_model_len
 

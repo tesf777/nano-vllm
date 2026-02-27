@@ -13,20 +13,28 @@ from nanovllm.engine.model_runner import ModelRunner
 
 
 class LLMEngine:
-
+    '''
+    将具体的模型抽象出来，统一交给Engine调用ModelRunner生成
+    '''
     def __init__(self, model, **kwargs):
+        # 返回Config类所有字段的tuple，并根据此生成dict
         config_fields = {field.name for field in fields(Config)}
         config_kwargs = {k: v for k, v in kwargs.items() if k in config_fields}
+        # 使用清洗好的dict初始化config
         config = Config(model, **config_kwargs)
-        self.ps = []
-        self.events = []
+        # ModelRunner是封装模型加载、前向计算的类。每个 GPU rank 一个实例
+        '''以下这部分代码会启动n个进程，并加载模型的n分之一参数'''
+        self.ps = [] # 子进程列表
+        self.events = [] # 同步事件列表
         ctx = mp.get_context("spawn")
+        # 对于子设备1~n 只负责计算，调度放在设备0中
         for i in range(1, config.tensor_parallel_size):
-            event = ctx.Event()
+            event = ctx.Event() # 用于主进程（rank=0）与其他 rank 同步
             process = ctx.Process(target=ModelRunner, args=(config, i, event))
             process.start()
             self.ps.append(process)
             self.events.append(event)
+        # 主设备加载model_runner,tokenizer
         self.model_runner = ModelRunner(config, 0, self.events)
         self.tokenizer = AutoTokenizer.from_pretrained(config.model, use_fast=True)
         config.eos = self.tokenizer.eos_token_id
@@ -34,22 +42,30 @@ class LLMEngine:
         atexit.register(self.exit)
 
     def exit(self):
+        # 主设备调用退出命令，进程回收
         self.model_runner.call("exit")
         del self.model_runner
         for p in self.ps:
             p.join()
 
     def add_request(self, prompt: str | list[int], sampling_params: SamplingParams):
+        '''向调度器waiting队列添加请求'''
         if isinstance(prompt, str):
             prompt = self.tokenizer.encode(prompt)
         seq = Sequence(prompt, sampling_params)
         self.scheduler.add(seq)
 
     def step(self):
+        '''
+        调度器调度->runner执行->
+        调度器后处理->输出已经完成的seq和token数目'''
         seqs, is_prefill = self.scheduler.schedule()
         token_ids = self.model_runner.call("run", seqs, is_prefill)
+        # 将自回归生成的token加入末尾
         self.scheduler.postprocess(seqs, token_ids)
+        # 输出已经完成的[(第i个seq,和自回归生成tokenid[12,3,124,24...])]
         outputs = [(seq.seq_id, seq.completion_token_ids) for seq in seqs if seq.is_finished]
+        # 正负号：为了区分prefill阶段还是decode阶段 以计算吞吐量
         num_tokens = sum(len(seq) for seq in seqs) if is_prefill else -len(seqs)
         return outputs, num_tokens
 
@@ -68,6 +84,7 @@ class LLMEngine:
             sampling_params = [sampling_params] * len(prompts)
         for prompt, sp in zip(prompts, sampling_params):
             self.add_request(prompt, sp)
+        # outputs :{key:seq_id,value:tokens_id}
         outputs = {}
         prefill_throughput = decode_throughput = 0.
         while not self.is_finished():
@@ -86,7 +103,7 @@ class LLMEngine:
                 outputs[seq_id] = token_ids
                 if use_tqdm:
                     pbar.update(1)
-        outputs = [outputs[seq_id] for seq_id in sorted(outputs.keys())]
+        outputs = [outputs[seq_id] for seq_id in sorted(outputs.keys())] # 按照序号顺序重整
         outputs = [{"text": self.tokenizer.decode(token_ids), "token_ids": token_ids} for token_ids in outputs]
         if use_tqdm:
             pbar.close()

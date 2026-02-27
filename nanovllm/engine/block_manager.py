@@ -53,7 +53,7 @@ class BlockManager:
     def compute_hash(cls, token_ids: list[int], prefix: int = -1):
         '''
         在维护kv-cache时，需要注意在语言模型中，同一个 token 序列出现在不同上下文中，其语义和注意力结果可能完全不同！\n
-        因此，我们在计算当前 block 的哈希时，把前一个 block 的哈希值作为前缀（prefix）一起参与hash。\n
+        因此，我们在计算当前 block 的哈希时，把前一个 block 的哈希值(int64位无符号整数)作为前缀（prefix）一起参与hash。\n
         这样，不同上下文，同时长得相同的Block，就不会被认为是相同的。
         '''
         h = xxhash.xxh64()
@@ -91,22 +91,27 @@ class BlockManager:
         cache_miss = False
         for i in range(seq.num_blocks):
             token_ids = seq.block(i)
+            # 如果是满的block就计算哈希
             h = self.compute_hash(token_ids, h) if len(token_ids) == self.block_size else -1
+            # 查字典，找到已经缓存的就返回缓存id，没找到就返回-1
             block_id = self.hash_to_block_id.get(h, -1)
+            # 如果没找到或者找到了但是hash冲突(小概率)
             if block_id == -1 or self.blocks[block_id].token_ids != token_ids:
                 cache_miss = True
             if cache_miss:
                 block_id = self.free_block_ids[0]
                 block = self._allocate_block(block_id)
             else:
+                # 增加缓存的引用计数和token缓存计数
                 seq.num_cached_tokens += self.block_size
                 if block_id in self.used_block_ids:
                     block = self.blocks[block_id]
                     block.ref_count += 1
                 else:
-                    # 
+                    # 校验环节，某种情况会发生：缓存命中，但是used池里没id
                     block = self._allocate_block(block_id)
             if h != -1:
+                # 递归hash要更新，并建立：新hash->当前block的映射
                 block.update(h, token_ids)
                 self.hash_to_block_id[h] = block_id
             seq.block_table.append(block_id)
@@ -128,11 +133,13 @@ class BlockManager:
         '''
         如果当前的序列长度恰好为block_size*n余1，刚好需要申请新Block时
         free池中恰好有资源，则返回True
+        [每轮生成前检查]
         '''
         return len(self.free_block_ids) >= (len(seq) % self.block_size == 1)
 
     def may_append(self, seq: Sequence):
         '''
+        [每轮生成后更新，此时token追加到seq，但未在block更新]
         实际执行 block 扩展或缓存更新的函数，在每次生成新 token 后调用
         - 情况1:刚好需要新Block时，例如tokens:256->257时，
         取free池首的Block，分配并添加页表
@@ -142,6 +149,7 @@ class BlockManager:
         block_table = seq.block_table
         last_block = self.blocks[block_table[-1]]
         if len(seq) % self.block_size == 1:
+            # decode阶段不会出现last_block.hash == -1的情况
             assert last_block.hash != -1
             block_id = self.free_block_ids[0]
             self._allocate_block(block_id)

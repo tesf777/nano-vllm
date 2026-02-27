@@ -36,15 +36,13 @@ class SequenceStatus(Enum):
 
 
 class Sequence:
+    
     # KV Cache 的内存块大小（单位：token）。所有序列共享此值，通常设为 16/32/256，用于对齐 GPU 内存访问。
-    '''
-    既然 token_ids 已经保存了完整列表，为什么还要单独存一个 num_tokens？
-    1.避免重复len()
-    '''
     block_size = 256
     counter = count()
 
     def __init__(self, token_ids: list[int], sampling_params = SamplingParams()):
+        # 从0开始分配seq的id
         self.seq_id = next(Sequence.counter)
         self.status = SequenceStatus.WAITING
         # 完整 token 列表 [prompt + generated] :list
@@ -53,7 +51,7 @@ class Sequence:
         self.last_token = token_ids[-1]
         # 当前总token数量，num_tokens在自回归生成过程会变长 :len(list)
         self.num_tokens = len(self.token_ids) 
-        # num_prompt_tokens保持不变
+        # num_prompt_tokens是prefill阶段的token，不会增加了。
         self.num_prompt_tokens = len(token_ids)
         # 已缓存到 GPU 的 token 数（用于增量更新）
         self.num_cached_tokens = 0
@@ -76,7 +74,9 @@ class Sequence:
 
     @property
     def num_completion_tokens(self):
-        '''已经生成的tokens数量'''
+        '''
+        已经生成的tokens数量，总长度-prefill长度
+        '''
         return self.num_tokens - self.num_prompt_tokens
 
     @property
@@ -91,25 +91,29 @@ class Sequence:
 
     @property
     def num_cached_blocks(self):
-        '''已缓存的 block 数'''
+        '''
+        已缓存的 block 数，总缓存token数量//一个block容纳token大小(256)
+        '''
         return self.num_cached_tokens // self.block_size
 
     @property
     def num_blocks(self):
-        '''总共需要的 block 数'''
+        '''
+        一个Seq总共需要的 block 数，这里的做法是向上取整，保证block只多不少
+        '''
         return (self.num_tokens + self.block_size - 1) // self.block_size
 
     @property
     def last_block_num_tokens(self):
         '''
-        最后一个block中token的数量
-        因为考虑到不能整除的情况，最后一个block往往未装满，例如: (124/156)
+        最后一个block中token的数量：总token数量减去n-1个block的token数量
+        因为考虑到不能整除的情况，最后一个block往往未装满，例如: (124/256)
         '''
         return self.num_tokens - (self.num_blocks - 1) * self.block_size
 
     def block(self, i):
         '''
-        返回第 i 个逻辑 block 对应的 token IDs。
+        返回第 i 个逻辑 block 对应的一组(256个) token IDs。
         用于 prefill 阶段：将 prompt 分块送入模型，逐步构建 KV Cache。
         '''
         assert 0 <= i < self.num_blocks
@@ -123,8 +127,10 @@ class Sequence:
 
     def __getstate__(self):
         ''' 
+        使用pickle包序列化时的魔术方法：
+        
         如果尚未生成任何 token，保存完整 token_ids；
-        否则只保存 last_token（节省序列化开销）
+        否则只保存 last_token（节省序列化开销），因为kvcache已经存有上下文信息了
         Prefill 阶段：需完整 prompt
         Decoding 阶段：只需最后一个 token
         '''
