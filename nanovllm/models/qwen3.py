@@ -3,9 +3,9 @@ from torch import nn
 import torch.distributed as dist
 from transformers import Qwen3Config
 
-from nanovllm.layers.activation import SiluAndMul
+from nanovllm.layers.activation import SiluAndMul,TritonSiluAndMul
 from nanovllm.layers.attention import Attention
-from nanovllm.layers.layernorm import RMSNorm
+from nanovllm.layers.layernorm import RMSNorm,TritonRMSNorm
 from nanovllm.layers.linear import QKVParallelLinear, MergedColumnParallelLinear, RowParallelLinear
 from nanovllm.layers.rotary_embedding import get_rope
 from nanovllm.layers.embed_head import VocabParallelEmbedding, ParallelLMHead
@@ -65,8 +65,10 @@ class Qwen3Attention(nn.Module):
             self.num_kv_heads,
         )
         if not self.qkv_bias:
-            self.q_norm = RMSNorm(self.head_dim, eps=rms_norm_eps)
-            self.k_norm = RMSNorm(self.head_dim, eps=rms_norm_eps)
+            # self.q_norm = RMSNorm(self.head_dim, eps=rms_norm_eps)
+            # self.k_norm = RMSNorm(self.head_dim, eps=rms_norm_eps)
+            self.q_norm = TritonRMSNorm(self.head_dim, eps=rms_norm_eps)
+            self.k_norm = TritonRMSNorm(self.head_dim, eps=rms_norm_eps)
 
     def forward(
         self,
@@ -107,7 +109,8 @@ class Qwen3MLP(nn.Module):
             bias=False,
         )
         assert hidden_act == "silu"
-        self.act_fn = SiluAndMul()
+        #self.act_fn = SiluAndMul()
+        self.act_fn = TritonSiluAndMul()
 
     def forward(self, x):
         gate_up = self.gate_up_proj(x)
@@ -139,8 +142,10 @@ class Qwen3DecoderLayer(nn.Module):
             intermediate_size=config.intermediate_size,
             hidden_act=config.hidden_act,
         )
-        self.input_layernorm = RMSNorm(config.hidden_size, eps=config.rms_norm_eps)
-        self.post_attention_layernorm = RMSNorm(config.hidden_size, eps=config.rms_norm_eps)
+        # self.input_layernorm = RMSNorm(config.hidden_size, eps=config.rms_norm_eps)
+        # self.post_attention_layernorm = RMSNorm(config.hidden_size, eps=config.rms_norm_eps)
+        self.input_layernorm = TritonRMSNorm(config.hidden_size, eps=config.rms_norm_eps)
+        self.post_attention_layernorm = TritonRMSNorm(config.hidden_size, eps=config.rms_norm_eps)
 
     def forward(
         self,
@@ -167,7 +172,8 @@ class Qwen3Model(nn.Module):
         super().__init__()
         self.embed_tokens = VocabParallelEmbedding(config.vocab_size, config.hidden_size)
         self.layers = nn.ModuleList([Qwen3DecoderLayer(config) for _ in range(config.num_hidden_layers)])
-        self.norm = RMSNorm(config.hidden_size, eps=config.rms_norm_eps)
+        # self.norm = RMSNorm(config.hidden_size, eps=config.rms_norm_eps)
+        self.norm = TritonRMSNorm(config.hidden_size, eps=config.rms_norm_eps)
 
     def forward(
         self,
