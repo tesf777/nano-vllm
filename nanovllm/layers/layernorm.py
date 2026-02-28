@@ -1,6 +1,10 @@
+from typing import Tuple
 import torch
 from torch import nn
+from typing import Optional, Tuple, Union
 
+from layers.triton_rmsnorm import skip_rmsnorm_no_view
+ 
 
 class RMSNorm(nn.Module):
 
@@ -48,3 +52,21 @@ class RMSNorm(nn.Module):
             return self.rms_forward(x)
         else:
             return self.add_rms_forward(x, residual)
+
+class TritonRMSNorm(nn.Module):
+
+    def __init__(
+        self,
+        hidden_size: int,
+        eps: float = 1e-6,
+    ) -> None:
+        super().__init__()
+        self.eps = eps
+        self.weight = nn.Parameter(torch.ones(hidden_size))
+
+    def forward(
+        self,
+        x: torch.Tensor,
+        residual: torch.Tensor | None = None,
+    ) -> torch.Tensor | tuple[torch.Tensor, torch.Tensor]:
+        return skip_rmsnorm_no_view(x, residual, self.weight,self.eps)
