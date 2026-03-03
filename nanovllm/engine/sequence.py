@@ -57,10 +57,12 @@ class Sequence:
         self.num_cached_tokens = 0
         # 指向物理 KV Cache 块(Blockid)的索引列表（如 [3, 7, 12]）
         self.block_table = []
-        # 将采样策略“扁平化”到序列对象中，避免每次生成时传递 SamplingParams
+        # 将采样策略”扁平化”到序列对象中，避免每次生成时传递 SamplingParams
         self.temperature = sampling_params.temperature
         self.max_tokens = sampling_params.max_tokens
         self.ignore_eos = sampling_params.ignore_eos
+        self.top_k = sampling_params.top_k
+        self.top_p = sampling_params.top_p
 
     def __len__(self):
         return self.num_tokens

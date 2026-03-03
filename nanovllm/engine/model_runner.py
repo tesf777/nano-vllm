@@ -279,10 +279,14 @@ class ModelRunner:
 
     def prepare_sample(self, seqs: list[Sequence]):
         temperatures = []
+        top_ks = []
+        top_ps = []
         for seq in seqs:
             temperatures.append(seq.temperature)
+            top_ks.append(seq.top_k)
+            top_ps.append(seq.top_p)
         temperatures = torch.tensor(temperatures, dtype=torch.float32, pin_memory=True).cuda(non_blocking=True)
-        return temperatures
+        return temperatures, top_ks[0], top_ps[0]
 
     @torch.inference_mode()
     def run_model(self, input_ids: torch.Tensor, positions: torch.Tensor, is_prefill: bool):
@@ -314,9 +318,9 @@ class ModelRunner:
         协调数据准备、模型执行、采样、上下文清理
         '''
         input_ids, positions = self.prepare_prefill(seqs) if is_prefill else self.prepare_decode(seqs)
-        temperatures = self.prepare_sample(seqs) if self.rank == 0 else None
+        temperatures, top_k, top_p = self.prepare_sample(seqs) if self.rank == 0 else (None, 0, 1.0)
         logits = self.run_model(input_ids, positions, is_prefill)
-        token_ids = self.sampler(logits, temperatures).tolist() if self.rank == 0 else None
+        token_ids = self.sampler(logits, temperatures, top_k, top_p).tolist() if self.rank == 0 else None
         reset_context()
         return token_ids
 
