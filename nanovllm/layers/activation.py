@@ -58,6 +58,7 @@ def benchmark_module(module, x, num_warmup=10, num_runs=100, device="cuda"):
 
 
 if __name__ == "__main__":
+    from triton_swiglu import swiglu_forward
     # ========== 配置区（直接修改这里）==========
     hidden_size = 4096          # 注意：SwiGLU 输入是 2 * intermediate_size
     batch_size = 8
