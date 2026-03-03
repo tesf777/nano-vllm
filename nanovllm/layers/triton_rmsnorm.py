@@ -69,6 +69,19 @@ def skip_rmsnorm_no_view(
     ) -> torch.Tensor | tuple[torch.Tensor, torch.Tensor]:
     # 假设X: [B, S, N]
     # 若X为[B,S,N]，不对其进行view
+    # 支持 2D [S, N] 或 3D [B, S, N]
+    #input_shape = X.shape
+    if X.dim() == 2:
+        # 自动添加 batch 维度: [S, N] -> [1, S, N]
+        X = X.unsqueeze(0)
+        if residual is not None:
+            residual = residual.unsqueeze(0)
+        was_2d = True
+    elif X.dim() == 3:
+        was_2d = False
+    else:
+        raise ValueError(f"Expected X to be 2D or 3D, got {X.dim()}D")
+  
     B, S, N = X.shape
     Y = torch.empty_like(X)
 
@@ -114,5 +127,12 @@ def skip_rmsnorm_no_view(
         has_residual=has_residual,
         BLOCK_SIZE=BLOCK_SIZE,
     )
-
-    return Y if residual is None else (Y, residual)
+    if was_2d:
+        Y = Y.squeeze(0)
+        if residual is not None:
+            residual = residual.squeeze(0)
+            return Y, residual
+        else:
+            return Y
+    else:
+        return Y if residual is None else (Y, residual)
